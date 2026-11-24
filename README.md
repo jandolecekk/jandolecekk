@@ -12,6 +12,7 @@ I work where go-to-market meets AI: I build agents, automations and small intern
 - 🔭 **What I care about** — making agents reliable in real work, not just impressive in a demo
 - 🔒 **Where the code is** — mostly private repos, so the graph below does the talking
 - 🎧 **Current mode** — _just vibin_
+- 📫 **Say hi** — [LinkedIn](https://www.linkedin.com/in/jan-dolecek/)
 
 ### 🛠️ Things I've built
 
