@@ -1,5 +1,7 @@
 // Generates assets/space-shooter.svg: a rocket that flies under the GitHub
-// contribution graph and shoots down every day that has contributions.
+// contribution graph and shoots down every day that has contributions. The
+// score counts up with every hit, and the busiest day of the year is the boss:
+// it is fought last and takes several hits.
 //
 //   GITHUB_TOKEN=... GITHUB_USER=jandolecekk node scripts/space-shooter.mjs
 //   node scripts/space-shooter.mjs --sample     (no network, placeholder data)
@@ -28,6 +30,12 @@ const SHIP_Y = 212;
 const MUZZLE_Y = SHIP_Y - 16;
 const SHIP_SPEED = 200; // px per second
 const FLIGHT = 0.2; // seconds a bullet needs to reach its target
+const BOSS_HP = 6; // hits the busiest day takes (fewer if it has fewer contributions)
+const BOSS_DT = 0.3; // seconds between shots at the boss
+const HUD_Y = 28; // baseline of the top text row
+const CW = 7.8; // width of one 13px monospace character
+const LH = 18; // line height of the rolling score digits
+const AMBER = '#fbbf24';
 const LEVEL = { NONE: 0, FIRST_QUARTILE: 1, SECOND_QUARTILE: 2, THIRD_QUARTILE: 3, FOURTH_QUARTILE: 4 };
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -39,7 +47,7 @@ async function fetchCalendar(login, token) {
       contributionsCollection {
         contributionCalendar {
           totalContributions
-          weeks { contributionDays { contributionLevel date weekday } }
+          weeks { contributionDays { contributionCount contributionLevel date weekday } }
         }
       }
     }
@@ -70,6 +78,8 @@ function sampleCalendar() {
   const start = new Date(end);
   start.setUTCDate(start.getUTCDate() - end.getUTCDay() - 52 * 7);
   const names = Object.keys(LEVEL);
+  const counts = [0, 2, 5, 9, 14];
+  let total = 0;
   const weeks = [];
   for (let w = 0; w < 53; w++) {
     const contributionDays = [];
@@ -77,11 +87,14 @@ function sampleCalendar() {
       const date = new Date(start);
       date.setUTCDate(date.getUTCDate() + w * 7 + d);
       if (date > end) break;
-      contributionDays.push({ contributionLevel: names[active[w]?.[d] ?? 0], date: date.toISOString().slice(0, 10), weekday: d });
+      const level = active[w]?.[d] ?? 0;
+      const contributionCount = w === 49 && d === 1 ? 34 : counts[level]; // one clear busiest day
+      total += contributionCount;
+      contributionDays.push({ contributionCount, contributionLevel: names[level], date: date.toISOString().slice(0, 10), weekday: d });
     }
     weeks.push({ contributionDays });
   }
-  return { totalContributions: 451, weeks };
+  return { totalContributions: total, weeks };
 }
 
 function render(calendar) {
@@ -92,19 +105,29 @@ function render(calendar) {
   const rowY = (r) => GY + r * PITCH;
 
   // --- targets: every day with contributions, column by column, bottom-up ---
-  const columns = [];
+  const all = [];
   weeks.forEach((week, c) => {
-    const hits = week.contributionDays
-      .filter((d) => LEVEL[d.contributionLevel] > 0)
-      .map((d) => ({ c, r: d.weekday, level: LEVEL[d.contributionLevel] }))
-      .sort((a, b) => b.r - a.r);
-    if (hits.length) columns.push({ c, hits });
+    for (const d of week.contributionDays) {
+      if (LEVEL[d.contributionLevel] > 0 || d.contributionCount > 0) {
+        all.push({ c, r: d.weekday, level: Math.max(1, LEVEL[d.contributionLevel]), count: d.contributionCount ?? 1, date: d.date });
+      }
+    }
   });
-  const total = columns.reduce((n, col) => n + col.hits.length, 0);
-  const dt = Math.min(0.17, Math.max(0.05, 16 / Math.max(total, 1))); // time between shots
+  // The boss is the busiest day (the most recent one on a tie).
+  const boss = all.reduce((best, h) => (!best || h.count >= best.count ? h : best), null);
+  const bossHp = boss ? Math.max(1, Math.min(BOSS_HP, boss.count)) : 0;
+  // Days above the boss in its column wait until it is gone, so no shot passes through it.
+  const late = boss ? all.filter((h) => h.c === boss.c && h.r < boss.r).sort((a, b) => b.r - a.r) : [];
+  const columns = [];
+  for (let c = 0; c < cols; c++) {
+    const hits = all.filter((h) => h.c === c && h !== boss && !late.includes(h)).sort((a, b) => b.r - a.r);
+    if (hits.length) columns.push({ c, hits });
+  }
+  const dt = Math.min(0.17, Math.max(0.05, 16 / Math.max(all.length, 1))); // time between shots
 
   // --- timeline -----------------------------------------------------------
   const stops = [{ t: 0, x: -30 }];
+  const events = []; // { t, add } -> score increments
   let t = 0;
   let x = -30;
   for (const col of columns) {
@@ -115,8 +138,36 @@ function render(calendar) {
     col.hits.forEach((h, j) => {
       h.fire = t + 0.05 + j * dt;
       h.hit = h.fire + FLIGHT;
+      events.push({ t: h.hit, add: h.count });
     });
     t += 0.05 + (col.hits.length - 1) * dt + 0.1;
+    stops.push({ t, x, ease: true });
+  }
+  // Boss fight: fly back to the busiest day and keep firing until it blows up.
+  let finaleStart = 0;
+  let bossDeath = 0;
+  const bossHits = [];
+  if (boss) {
+    finaleStart = t;
+    const bx = colX(boss.c) + CELL / 2;
+    t += Math.abs(bx - x) / SHIP_SPEED + 0.25;
+    x = bx;
+    stops.push({ t, x, ease: false });
+    for (let j = 0; j < bossHp; j++) {
+      const fire = t + 0.15 + j * BOSS_DT;
+      // Split the boss's contributions over its hits so the score still adds up.
+      const add = Math.floor((boss.count * (j + 1)) / bossHp) - Math.floor((boss.count * j) / bossHp);
+      bossHits.push({ fire, hit: fire + FLIGHT });
+      events.push({ t: fire + FLIGHT, add });
+    }
+    bossDeath = bossHits[bossHp - 1].hit;
+    t = bossDeath + 0.45;
+    late.forEach((h, j) => {
+      h.fire = t + j * dt;
+      h.hit = h.fire + FLIGHT;
+      events.push({ t: h.hit, add: h.count });
+    });
+    if (late.length) t += (late.length - 1) * dt + FLIGHT + 0.1;
     stops.push({ t, x, ease: true });
   }
   t += (W + 30 - x) / SHIP_SPEED;
@@ -135,6 +186,16 @@ function render(calendar) {
     .ship { transform: translateX(${W / 2}px); animation: ship ${T}s linear infinite; }
     .flame { transform-box: fill-box; transform-origin: 50% 0; animation: flame .13s ease-in-out infinite alternate; }
     @keyframes flame { from { transform: scaleY(.55) } to { transform: scaleY(1.15) } }
+    .h { font: 13px ${MONO}; fill: ${C.muted}; }
+    .s { animation: ${T}s steps(1, end) infinite; }
+    .hp { opacity: 0; animation: hp ${T}s linear infinite; }
+    .seg { animation: ${T}s linear infinite; }
+    .ring { fill: none; stroke: ${AMBER}; stroke-width: 1.5; transform-box: fill-box; transform-origin: center; animation: ring .7s ease-in-out infinite alternate; }
+    @keyframes ring { from { transform: scale(1); opacity: 1 } to { transform: scale(1.3); opacity: .35 } }
+    .f { opacity: 0; fill: #fff; animation: flash ${T}s linear infinite; }
+    @keyframes flash { 0% { opacity: .95 } ${pct(0.2)}%, to { opacity: 0 } }
+    .xb { opacity: 0; fill: none; stroke-width: 3; transform-box: fill-box; transform-origin: center; animation: bigboom ${T}s linear infinite; }
+    @keyframes bigboom { 0% { opacity: 1; transform: scale(.4) } ${pct(0.7)}%, to { opacity: 0; transform: scale(5) } }
     .stars { animation: stars 26s linear infinite; }
     @keyframes stars { from { transform: translateY(0) } to { transform: translateY(${H}px) } }`;
 
@@ -153,24 +214,89 @@ function render(calendar) {
   let cells = '';
   let bullets = '';
   let booms = '';
+  const bullet = (h, fire, colour) =>
+    `<rect class="b" x="${r2(colX(h.c) + CELL / 2 - 1.5)}" y="${MUZZLE_Y - 9}" width="3" height="9" rx="1.5" style="animation-name:b${h.r};animation-delay:${r2(fire)}s${colour ? `;fill:${colour}` : ''}"/>`;
+  const boom = (h, at) => `<circle class="x" cx="${r2(colX(h.c) + CELL / 2)}" cy="${rowY(h.r) + CELL / 2}" r="6" style="animation-delay:${r2(at)}s"/>`;
+  // One cell that is visible until `gone`, then grows back (left to right) after the run.
+  const lifeCss = (name, h, gone) => {
+    const back = respawn + (h.c / cols) * 0.7;
+    return `
+    @keyframes ${name} { 0%, ${pct(gone)}% { opacity: 1 } ${r2(pct(gone) + 0.15)}%, ${pct(back)}% { opacity: 0 } ${pct(back + 0.45)}%, to { opacity: 1 } }`;
+  };
   let i = 0;
-  for (const col of columns) {
-    for (const h of col.hits) {
-      const cx = r2(colX(h.c));
-      const cy = rowY(h.r);
-      const back = respawn + (h.c / cols) * 0.7; // cells grow back left to right
-      css += `
-    @keyframes k${i} { 0%, ${pct(h.hit)}% { opacity: 1 } ${r2(pct(h.hit) + 0.15)}%, ${pct(back)}% { opacity: 0 } ${pct(back + 0.45)}%, to { opacity: 1 } }`;
-      cells += `<rect class="c" x="${cx}" y="${cy}" width="${CELL}" height="${CELL}" rx="2.5" fill="${C.levels[h.level]}" style="animation-name:k${i}"/>`;
-      bullets += `<rect class="b" x="${r2(cx + CELL / 2 - 1.5)}" y="${MUZZLE_Y - 9}" width="3" height="9" rx="1.5" style="animation-name:b${h.r};animation-delay:${r2(h.fire)}s"/>`;
-      booms += `<circle class="x" cx="${r2(cx + CELL / 2)}" cy="${cy + CELL / 2}" r="6" style="animation-delay:${r2(h.hit)}s"/>`;
-      i++;
-    }
+  for (const h of [...columns.flatMap((col) => col.hits), ...late]) {
+    css += lifeCss(`k${i}`, h, h.hit);
+    cells += `<rect class="c" x="${r2(colX(h.c))}" y="${rowY(h.r)}" width="${CELL}" height="${CELL}" rx="2.5" fill="${C.levels[h.level]}" style="animation-name:k${i}"/>`;
+    bullets += bullet(h, h.fire);
+    booms += boom(h, h.hit);
+    i++;
   }
+
+  let bossHud = '';
+  let bossNote = '';
+  if (boss) {
+    const bx = r2(colX(boss.c));
+    const by = rowY(boss.r);
+    css += lifeCss('kb', boss, bossDeath);
+    cells += `<g class="c" style="animation-name:kb"><rect x="${bx}" y="${by}" width="${CELL}" height="${CELL}" rx="2.5" fill="${C.levels[boss.level]}"/><rect class="ring" x="${bx - 3}" y="${by - 3}" width="${CELL + 6}" height="${CELL + 6}" rx="4.5"/></g>`;
+    bossHits.forEach((b, j) => {
+      bullets += bullet(boss, b.fire, AMBER);
+      booms += boom(boss, b.hit);
+      if (j < bossHp - 1) booms += `<rect class="f" x="${bx}" y="${by}" width="${CELL}" height="${CELL}" rx="2.5" style="animation-delay:${r2(b.hit)}s"/>`;
+    });
+    [AMBER, C.pink, '#fff'].forEach((col, j) => {
+      booms += `<circle class="xb" cx="${r2(bx + CELL / 2)}" cy="${by + CELL / 2}" r="8" stroke="${col}" style="animation-delay:${r2(bossDeath + j * 0.1)}s"/>`;
+    });
+
+    // HP bar in the top row, only visible during the boss fight.
+    css += `
+    @keyframes hp { 0%, ${pct(finaleStart)}% { opacity: 0 } ${pct(finaleStart + 0.3)}%, ${pct(bossDeath + 0.5)}% { opacity: 1 } ${pct(bossDeath + 0.9)}%, to { opacity: 0 } }`;
+    const hx = GX + 290;
+    let segs = '';
+    bossHits.forEach((b, j) => {
+      const k = bossHp - 1 - j; // the bar empties from the right
+      css += `
+    @keyframes h${j} { 0%, ${pct(b.hit)}% { opacity: 1 } ${r2(pct(b.hit) + 0.1)}%, to { opacity: .15 } }`;
+      segs += `<rect class="seg" x="${r2(hx + 5 * CW + k * 14)}" y="${HUD_Y - 9}" width="11" height="9" rx="2" fill="${AMBER}" style="animation-name:h${j}"/>`;
+    });
+    bossHud = `<g class="hp"><text class="h" x="${hx}" y="${HUD_Y}" style="fill:${AMBER};font-weight:600">BOSS</text>${segs}</g>`;
+    const [, bm, bd] = boss.date.split('-').map(Number);
+    bossNote = `<text class="t" x="${GX}" y="${H - 14}"><tspan fill="${AMBER}">Boss</tspan> = busiest day: ${MONTHS[bm - 1]} ${bd} · ${boss.count} contribution${boss.count === 1 ? '' : 's'}</text>`;
+  }
+
+  // --- score: one strip of 0-9 per digit, stepped up at every hit ------------
+  const digits = Math.max(6, String(calendar.totalContributions).length);
+  const right = colX(cols - 1) + CELL;
+  const hiX = right - digits * CW;
+  const scoreX = hiX - (9 + 3 + digits) * CW; // "HI-SCORE " + gap + score digits
+  events.sort((a, b) => a.t - b.t);
+  let scoreStrips = '';
+  for (let d = 0; d < digits; d++) {
+    const frames = new Map([[0, 0]]); // percent -> digit shown from then on
+    let sum = 0;
+    let prev = 0;
+    for (const e of events) {
+      sum += e.add;
+      const v = Math.floor(sum / 10 ** (digits - 1 - d)) % 10;
+      if (v !== prev) frames.set(pct(e.t), v);
+      prev = v;
+    }
+    css += `
+    @keyframes s${d} { ${[...frames].map(([p, v]) => `${p}% { transform: translateY(${-v * LH}px) }`).join(' ')} to { transform: translateY(${-prev * LH}px) } }`;
+    const x0 = r2(scoreX + d * CW);
+    scoreStrips += `<text class="h s" style="animation-name:s${d};fill:${C.cyan};font-weight:600">${[...Array(10).keys()].map((n) => `<tspan x="${x0}" y="${HUD_Y + n * LH}">${n}</tspan>`).join('')}</text>`;
+  }
+  const label = (text, x) => `<text class="h" x="${r2(x)}" y="${HUD_Y}" textLength="${r2(text.length * CW)}" lengthAdjust="spacing">${text}</text>`;
+  const hud = `
+    ${label('SCORE', scoreX - 6 * CW)}
+    <g clip-path="url(#score)">${scoreStrips}</g>
+    ${label('HI-SCORE', hiX - 9 * CW)}
+    <text class="h" x="${r2(hiX)}" y="${HUD_Y}" textLength="${r2(digits * CW)}" lengthAdjust="spacing" style="fill:${C.pink};font-weight:600">${String(calendar.totalContributions).padStart(digits, '0')}</text>
+    ${bossHud}`;
 
   css += `
     @media (prefers-reduced-motion: reduce) {
-      .c, .b, .x, .ship, .flame, .stars { animation: none !important; }
+      .c, .b, .x, .ship, .flame, .stars, .s, .hp, .seg, .ring, .f, .xb { animation: none !important; }
     }`;
 
   // --- static bits --------------------------------------------------------
@@ -202,7 +328,6 @@ function render(calendar) {
     starField += `<circle cx="${r2(rand() * W)}" cy="${r2(rand() * H)}" r="${r2(0.5 + rand() * 0.9)}" opacity="${r2(0.15 + rand() * 0.5)}"/>`;
   }
 
-  const score = String(calendar.totalContributions).padStart(6, '0');
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="A rocket shooting down the contribution graph: ${calendar.totalContributions} contributions in the last year">
   <title>${calendar.totalContributions} contributions in the last year</title>
   <defs>
@@ -215,6 +340,7 @@ function render(calendar) {
     <pattern id="cell" patternUnits="userSpaceOnUse" x="${GX}" y="${GY}" width="${PITCH}" height="${PITCH}">
       <rect width="${CELL}" height="${CELL}" rx="2.5" fill="${C.empty}"/>
     </pattern>
+    <clipPath id="score"><rect x="${r2(scoreX - 1)}" y="${HUD_Y - 13}" width="${r2(digits * CW + 2)}" height="17"/></clipPath>
     <clipPath id="card"><rect x="1.5" y="1.5" width="${W - 3}" height="${H - 3}" rx="14"/></clipPath>
   </defs>
   <style>${css}
@@ -223,8 +349,9 @@ function render(calendar) {
   <rect x="1.5" y="1.5" width="${W - 3}" height="${H - 3}" rx="14" fill="${C.bg}"/>
   <g clip-path="url(#card)">
     <g class="stars" fill="${C.text}"><g>${starField}</g><g transform="translate(0,${-H})">${starField}</g></g>
-    <text class="t" x="${GX}" y="28" style="font-size:13px"><tspan fill="${C.text}" font-weight="600">${calendar.totalContributions}</tspan> contributions in the last year</text>
-    <text class="t" x="${r2(colX(cols - 1) + CELL)}" y="28" text-anchor="end" style="font-size:13px">HI-SCORE <tspan fill="${C.pink}" font-weight="600">${score}</tspan></text>
+    <text class="h" x="${GX}" y="${HUD_Y}"><tspan fill="${C.text}" font-weight="600">${calendar.totalContributions}</tspan> contributions in the last year</text>
+    ${hud}
+    ${bossNote}
     ${months}${days}${grid}
     ${cells}
     ${bullets}
