@@ -13,6 +13,10 @@ I work where go-to-market meets AI: I build agents, automations and small intern
 - 🔒 **Where the code is** — mostly private repos, so the graph below does the talking
 - 🎧 **Current mode** — _just vibin_
 
+### 🛠️ Things I've built
+
+- **[claude-usage-widget](https://github.com/jandolecekk/claude-usage-widget)** — a macOS menu bar app in Swift that shows how much of your Claude plan you've used, what your Claude Code sessions are doing, and how your Mac's memory is holding up.
+
 ### 🚀 Contributions, under fire
 
 <div align="center">
