@@ -30,8 +30,9 @@ const SHIP_Y = 212;
 const MUZZLE_Y = SHIP_Y - 16;
 const SHIP_SPEED = 200; // px per second
 const FLIGHT = 0.2; // seconds a bullet needs to reach its target
-const BOSS_HP = 6; // hits the busiest day takes (fewer if it has fewer contributions)
-const BOSS_DT = 0.3; // seconds between shots at the boss
+const BOSS_HP = 10; // hits the busiest day takes (fewer if it has fewer contributions)
+const BOSS_DT = 0.34; // seconds between shots at the boss
+const BANNER = 1.6; // seconds the BOSS FIGHT banner stays up before the fight starts
 const HUD_Y = 28; // baseline of the top text row
 const CW = 7.8; // width of one 13px monospace character
 const LH = 18; // line height of the rolling score digits
@@ -150,7 +151,8 @@ function render(calendar) {
   if (boss) {
     finaleStart = t;
     const bx = colX(boss.c) + CELL / 2;
-    t += Math.abs(bx - x) / SHIP_SPEED + 0.25;
+    // The ship flies back under the boss while the banner is up; the fight starts when it clears.
+    t = Math.max(t + Math.abs(bx - x) / SHIP_SPEED + 0.25, finaleStart + BANNER);
     x = bx;
     stops.push({ t, x, ease: false });
     for (let j = 0; j < bossHp; j++) {
@@ -161,7 +163,7 @@ function render(calendar) {
       events.push({ t: fire + FLIGHT, add });
     }
     bossDeath = bossHits[bossHp - 1].hit;
-    t = bossDeath + 0.45;
+    t = bossDeath + 0.8;
     late.forEach((h, j) => {
       h.fire = t + j * dt;
       h.hit = h.fire + FLIGHT;
@@ -195,7 +197,16 @@ function render(calendar) {
     .f { opacity: 0; fill: #fff; animation: flash ${T}s linear infinite; }
     @keyframes flash { 0% { opacity: .95 } ${pct(0.2)}%, to { opacity: 0 } }
     .xb { opacity: 0; fill: none; stroke-width: 3; transform-box: fill-box; transform-origin: center; animation: bigboom ${T}s linear infinite; }
-    @keyframes bigboom { 0% { opacity: 1; transform: scale(.4) } ${pct(0.7)}%, to { opacity: 0; transform: scale(5) } }
+    @keyframes bigboom { 0% { opacity: 1; transform: scale(.4) } ${pct(0.9)}%, to { opacity: 0; transform: scale(8) } }
+    .grow { transform-box: fill-box; transform-origin: center; animation: grow ${T}s ease-in-out infinite; }
+    .band { opacity: 0; animation: band ${T}s linear infinite; }
+    .banner { opacity: 0; transform-box: fill-box; transform-origin: center; animation: banner ${T}s linear infinite; }
+    .blink2 { animation: blink2 .3s steps(1) infinite; }
+    @keyframes blink2 { 0% { opacity: 1 } 50% { opacity: .72 } }
+    .sf { opacity: 0; fill: #fff; animation: sf ${T}s linear infinite; }
+    @keyframes sf { 0% { opacity: .45 } ${pct(0.35)}%, to { opacity: 0 } }
+    .pts { opacity: 0; font: 700 16px ${MONO}; fill: ${AMBER}; animation: pts ${T}s ease-out infinite; }
+    @keyframes pts { 0% { opacity: 1; transform: translateY(0) } ${pct(1.3)}% { opacity: 1; transform: translateY(-26px) } ${pct(1.7)}%, to { opacity: 0; transform: translateY(-30px) } }
     .stars { animation: stars 26s linear infinite; }
     @keyframes stars { from { transform: translateY(0) } to { transform: translateY(${H}px) } }`;
 
@@ -234,19 +245,39 @@ function render(calendar) {
 
   let bossHud = '';
   let bossNote = '';
+  let bossCell = '';
+  let banner = '';
   if (boss) {
     const bx = r2(colX(boss.c));
     const by = rowY(boss.r);
     css += lifeCss('kb', boss, bossDeath);
-    cells += `<g class="c" style="animation-name:kb"><rect x="${bx}" y="${by}" width="${CELL}" height="${CELL}" rx="2.5" fill="${C.levels[boss.level]}"/><rect class="ring" x="${bx - 3}" y="${by - 3}" width="${CELL + 6}" height="${CELL + 6}" rx="4.5"/></g>`;
+    const [, bm, bd] = boss.date.split('-').map(Number);
+    const bossDay = `${MONTHS[bm - 1]} ${bd} · ${boss.count} contribution${boss.count === 1 ? '' : 's'}`;
+    // The boss swells to double size when the fight starts and flashes white on every hit.
+    css += `
+    @keyframes grow { 0%, ${pct(finaleStart + 0.2)}% { transform: scale(1) } ${pct(finaleStart + 0.9)}%, ${pct(bossDeath + 0.3)}% { transform: scale(2.2) } ${pct(bossDeath + 0.5)}%, to { transform: scale(1) } }
+    @keyframes band { 0%, ${pct(finaleStart)}% { opacity: 0 } ${pct(finaleStart + 0.15)}%, ${pct(finaleStart + BANNER - 0.3)}% { opacity: 1 } ${pct(finaleStart + BANNER)}%, to { opacity: 0 } }
+    @keyframes banner { 0%, ${pct(finaleStart)}% { opacity: 0; transform: scale(1.7) } ${pct(finaleStart + 0.2)}%, ${pct(finaleStart + BANNER - 0.3)}% { opacity: 1; transform: scale(1) } ${pct(finaleStart + BANNER)}%, to { opacity: 0; transform: scale(.94) } }`;
+    let flashes = '';
     bossHits.forEach((b, j) => {
       bullets += bullet(boss, b.fire, AMBER);
       booms += boom(boss, b.hit);
-      if (j < bossHp - 1) booms += `<rect class="f" x="${bx}" y="${by}" width="${CELL}" height="${CELL}" rx="2.5" style="animation-delay:${r2(b.hit)}s"/>`;
+      if (j < bossHp - 1) flashes += `<rect class="f" x="${bx}" y="${by}" width="${CELL}" height="${CELL}" rx="2.5" style="animation-delay:${r2(b.hit)}s"/>`;
     });
-    [AMBER, C.pink, '#fff'].forEach((col, j) => {
-      booms += `<circle class="xb" cx="${r2(bx + CELL / 2)}" cy="${by + CELL / 2}" r="8" stroke="${col}" style="animation-delay:${r2(bossDeath + j * 0.1)}s"/>`;
+    bossCell = `<g class="c" style="animation-name:kb"><g class="grow"><rect x="${bx}" y="${by}" width="${CELL}" height="${CELL}" rx="2.5" fill="${C.levels[boss.level]}"/><rect class="ring" x="${bx - 3}" y="${by - 3}" width="${CELL + 6}" height="${CELL + 6}" rx="4.5"/>${flashes}</g></g>`;
+    [AMBER, C.pink, '#fff', AMBER, C.cyan].forEach((col, j) => {
+      booms += `<circle class="xb" cx="${r2(bx + CELL / 2)}" cy="${by + CELL / 2}" r="8" stroke="${col}" style="animation-delay:${r2(bossDeath + j * 0.12)}s"/>`;
     });
+    booms += `<rect class="sf" x="0" y="0" width="${W}" height="${H}" style="animation-delay:${r2(bossDeath)}s"/>`;
+    booms += `<text class="pts" x="${r2(Math.min(bx + CELL / 2, W - 60))}" y="${by - 8}" text-anchor="middle" style="animation-delay:${r2(bossDeath)}s">+${boss.count}</text>`;
+
+    // BOSS FIGHT banner across the graph, shown before the first shot.
+    const mid = GY + (7 * PITCH - (PITCH - CELL)) / 2;
+    banner = `<rect class="band" x="0" y="${GY - 3}" width="${W}" height="${7 * PITCH + 6}" fill="${C.bg}" fill-opacity=".82"/>
+    <g class="banner"><g class="blink2">
+      <text x="${W / 2}" y="${r2(mid + 8)}" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="46" font-weight="900" letter-spacing="6" fill="${AMBER}" stroke="${C.pink}" stroke-width="1.2" paint-order="stroke">BOSS FIGHT</text>
+      <text class="h" x="${W / 2}" y="${r2(mid + 32)}" text-anchor="middle" style="fill:${C.text}">busiest day · ${bossDay}</text>
+    </g></g>`;
 
     // HP bar in the top row, only visible during the boss fight.
     css += `
@@ -260,8 +291,7 @@ function render(calendar) {
       segs += `<rect class="seg" x="${r2(hx + 5 * CW + k * 14)}" y="${HUD_Y - 9}" width="11" height="9" rx="2" fill="${AMBER}" style="animation-name:h${j}"/>`;
     });
     bossHud = `<g class="hp"><text class="h" x="${hx}" y="${HUD_Y}" style="fill:${AMBER};font-weight:600">BOSS</text>${segs}</g>`;
-    const [, bm, bd] = boss.date.split('-').map(Number);
-    bossNote = `<text class="t" x="${GX}" y="${H - 14}"><tspan fill="${AMBER}">Boss</tspan> = busiest day: ${MONTHS[bm - 1]} ${bd} · ${boss.count} contribution${boss.count === 1 ? '' : 's'}</text>`;
+    bossNote = `<text class="t" x="${GX}" y="${H - 14}"><tspan fill="${AMBER}">Boss</tspan> = busiest day: ${bossDay}</text>`;
   }
 
   // --- score: one strip of 0-9 per digit, stepped up at every hit ------------
@@ -296,7 +326,7 @@ function render(calendar) {
 
   css += `
     @media (prefers-reduced-motion: reduce) {
-      .c, .b, .x, .ship, .flame, .stars, .s, .hp, .seg, .ring, .f, .xb { animation: none !important; }
+      .c, .b, .x, .ship, .flame, .stars, .s, .hp, .seg, .ring, .f, .xb, .grow, .band, .banner, .blink2, .sf, .pts { animation: none !important; }
     }`;
 
   // --- static bits --------------------------------------------------------
@@ -354,6 +384,8 @@ function render(calendar) {
     ${bossNote}
     ${months}${days}${grid}
     ${cells}
+    ${banner}
+    ${bossCell}
     ${bullets}
     ${booms}
     <g transform="translate(0,${SHIP_Y})">
