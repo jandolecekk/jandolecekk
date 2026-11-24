@@ -4,7 +4,7 @@
 
 ### 👋 Who's this
 
-I'm **Jan**, a **Marketing AI Analyst at [Bloomreach](https://www.bloomreach.com)**, based in Brno 🇨🇿.
+I'm **Jan**, an **AI Developer at [Bloomreach](https://www.bloomreach.com)**, based in Brno 🇨🇿.
 
 I work where go-to-market meets AI: I build agents, automations and small internal tools that take the repetitive work off marketing and sales teams, so people can spend their time on the things that actually need a human.
 
